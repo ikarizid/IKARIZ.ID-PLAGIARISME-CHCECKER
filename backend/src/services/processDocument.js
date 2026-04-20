@@ -19,7 +19,7 @@ const fs = require("fs");
 const path = require("path");
 const { v4: uuidv4 } = require("uuid");
 const { detectFileInfo } = require("../utils/detectFileInfo");
-const { analyzePlagiarism } = require("../utils/claudeApi");
+const { analyzePlagiarism } = require("../utils/geminiApi");
 const {
   getOrder,
   updateOrder,

@@ -1,65 +1,56 @@
 /**
- * claudeApi.js
+ * geminiApi.js
  * ─────────────────────────────────────────────────────────────
- * Integrasi Claude API (Anthropic) untuk analisis plagiarisme
- * Model: claude-sonnet-4-20250514
+ * Integrasi Google Gemini API untuk analisis plagiarisme
+ * Model: gemini-1.5-flash
  * ─────────────────────────────────────────────────────────────
  */
 
-const Anthropic = require("@anthropic-ai/sdk");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-const CLAUDE_MODEL = "claude-sonnet-4-20250514";
+const GEMINI_MODEL = "gemini-1.5-flash";
 
-// Inisialisasi client Anthropic
+// Inisialisasi client Gemini
 function getClient() {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey || apiKey.startsWith("sk-ant-xxxx")) {
-    throw new Error("ANTHROPIC_API_KEY belum di-set dengan key yang valid di .env");
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY belum di-set di environment variables.");
   }
-  return new Anthropic({ apiKey });
+  return new GoogleGenerativeAI(apiKey);
 }
 
 /**
- * Panggil Claude API dengan retry logic
- * @param {Anthropic} client
- * @param {string} prompt
- * @param {number} retries
+ * Panggil Gemini API dengan retry logic
  */
-async function callClaudeWithRetry(client, prompt, retries = 3) {
+async function callGeminiWithRetry(client, prompt, retries = 3) {
   for (let i = 0; i < retries; i++) {
     try {
-      const response = await client.messages.create({
-        model: CLAUDE_MODEL,
-        max_tokens: 4096,
-        messages: [{ role: "user", content: prompt }],
-      });
-
-      return response.content[0].text;
+      const model = client.getGenerativeModel({ model: GEMINI_MODEL });
+      const result = await model.generateContent(prompt);
+      return result.response.text();
     } catch (err) {
       if (err.status === 429) {
-        console.warn(`[Claude API] Rate limited. Retrying in ${i + 2} seconds...`);
+        console.warn(`[Gemini API] Rate limited. Retrying in ${i + 2} seconds...`);
         await new Promise((res) => setTimeout(res, (i + 2) * 1000));
         continue;
       }
-      if (err.status === 529 || err.status >= 500) {
-        console.warn(`[Claude API] Server error/overload. Retrying in ${i + 2} seconds...`);
+      if (err.status === 500 || err.status === 503) {
+        console.warn(`[Gemini API] Server error/overload. Retrying in ${i + 2} seconds...`);
         await new Promise((res) => setTimeout(res, (i + 2) * 1000));
         continue;
       }
-      // Non-retriable error
       throw err;
     }
   }
-  throw new Error("Berulang kali gagal memanggil Claude API");
+  throw new Error("Berulang kali gagal memanggil Gemini API");
 }
 
 /**
- * Queue management untuk Rate Limiting (max 5 request per detik)
+ * Queue management untuk Rate Limiting
  */
 class RateLimiter {
-  constructor(requestsPerSecond) {
-    this.requestsPerSecond = requestsPerSecond;
-    this.interval = 1000 / requestsPerSecond;
+  constructor(requestsPerMinute) {
+    this.interval = (60 * 1000) / requestsPerMinute;
     this.lastRequestTime = 0;
   }
 
@@ -74,36 +65,36 @@ class RateLimiter {
   }
 }
 
-// Global rate limiter instance (5 per second)
-const claudeRateLimiter = new RateLimiter(5);
+// Global rate limiter instance (14 per minute, leave 1 for buffer in free tier)
+const geminiRateLimiter = new RateLimiter(14);
 
 /**
  * Menganalisis satu paragraf
  */
 async function analyzeSingleParagraph(client, paragraph) {
-  // Throttle request agar tidak melampaui 5 req/sec
-  await claudeRateLimiter.throttle();
+  // Throttle request agar tidak melampaui limit gratis Gemini
+  await geminiRateLimiter.throttle();
 
-  const prompt = `Kamu adalah sistem pendeteksi plagiarisme. Analisis teks berikut dan tentukan:
+  const prompt = `Kamu adalah sistem pendeteksi plagiarisme profesional. Analisis teks berikut dan tentukan:
 1. Apakah teks ini kemungkinan besar diambil/disalin dari sumber lain?
 2. Berapa persen kemungkinan plagiatnya (0-100%)?
-3. Jenis plagiarisme apa (langsung/verbatim, parafrase, mosaic)?
+3. Jenis plagiarisme apa (none, verbatim, paraphrase, mosaic)?
 
-Berikan output dalam format JSON HANYA. Jangan buat opening / closing text:
+Berikan output HANYA dalam format JSON. Jangan buat opening / closing text:
 {
-  "similarity_score": 0-100,
-  "plagiarism_type": "none|verbatim|paraphrase|mosaic",
-  "explanation": "penjelasan singkat",
-  "suggested_sources": ["kemungkinan sumber jika ada"]
+  "similarity_score": <angka_0_sampai_100>,
+  "plagiarism_type": "<none/verbatim/paraphrase/mosaic>",
+  "explanation": "<penjelasan_singkat_berbahasa_indonesia>",
+  "suggested_sources": ["<kemungkinan_sumber_seperti_wikipedia_atau_jurnal_jika_ada_jika_tidak_kosongkan>"]
 }
 
 Teks yang dianalisis:
 ${paragraph}`;
 
-  const responseText = await callClaudeWithRetry(client, prompt);
+  const responseText = await callGeminiWithRetry(client, prompt);
 
   let jsonStr = responseText.trim();
-  // Membersihkan potensi blok markdown dari response Claude
+  // Membersihkan potensi blok markdown dari response Gemini
   if (jsonStr.startsWith("```json")) jsonStr = jsonStr.slice(7);
   else if (jsonStr.startsWith("```")) jsonStr = jsonStr.slice(3);
   if (jsonStr.endsWith("```")) jsonStr = jsonStr.slice(0, -3);
@@ -116,20 +107,20 @@ ${paragraph}`;
       data: result,
     };
   } catch (error) {
-    console.error("[Claude API] Gagal parsing JSON:", jsonStr);
+    console.error("[Gemini API] Gagal parsing JSON:", jsonStr);
     return {
       success: false,
-      error: "Gagal memparse respons dari Claude API",
+      error: "Gagal memparse respons dari Gemini API",
     };
   }
 }
 
 /**
  * Fungsi Utama: analyzePlagiarism
- * Membagi teks menjadi paragraf dan memproses dengan Claude API
+ * Membagi teks menjadi paragraf dan memproses dengan Gemini API
  *
  * @param {string} text - Seluruh teks dokumen
- * @param {string} filename - Nama file (opsional, untuk konteks tambahan jika diperlukan)
+ * @param {string} filename - Nama file (opsional)
  * @returns {Promise<Object>}
  */
 async function analyzePlagiarism(text, filename = "") {
@@ -146,7 +137,7 @@ async function analyzePlagiarism(text, filename = "") {
     throw new Error("Tidak ada paragraf yang cukup panjang untuk dianalisis.");
   }
 
-  console.log(`[Claude API] Memulai analisis plagiarisme untuk file ${filename}. Total ${paragraphs.length} paragraf.`);
+  console.log(`[Gemini API] Memulai analisis plagiarisme untuk file ${filename}. Total ${paragraphs.length} paragraf.`);
 
   const analyzedParagraphs = [];
   let totalScoreSum = 0;
@@ -155,11 +146,9 @@ async function analyzePlagiarism(text, filename = "") {
   let lowCount = 0;
 
   // 3. Kumpulkan semua hasil analisis per paragraf
-  // Gunakan loop berurut (atau Promise.all dengan concurrency control) 
-  // Di sini kita gunakan loop agar rate limiter lebih stabil
   for (let i = 0; i < paragraphs.length; i++) {
     const paragraphText = paragraphs[i];
-    console.log(`[Claude API] Menganalisis paragraf ${i + 1}/${paragraphs.length}...`);
+    console.log(`[Gemini API] Menganalisis paragraf ${i + 1}/${paragraphs.length}...`);
     
     const analysisResult = await analyzeSingleParagraph(client, paragraphText);
     
@@ -216,5 +205,5 @@ async function analyzePlagiarism(text, filename = "") {
 
 module.exports = {
   analyzePlagiarism,
-  CLAUDE_MODEL,
+  GEMINI_MODEL,
 };
