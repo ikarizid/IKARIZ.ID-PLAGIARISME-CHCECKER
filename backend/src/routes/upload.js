@@ -25,7 +25,8 @@ const storage = multer.diskStorage({
     cb(null, UPLOAD_DIR);
   },
   filename: function (req, file, cb) {
-    const fileId = `file_${Date.now()}_${uuidv4().substring(0, 8)}`;
+    const ext = path.extname(file.originalname).toLowerCase();
+    const fileId = `file_${Date.now()}_${uuidv4().substring(0, 8)}${ext}`;
     cb(null, fileId);
   },
 });
@@ -55,7 +56,7 @@ router.post("/upload", upload.single("file"), async (req, res) => {
     const fileSizeMB = Math.round((size / (1024 * 1024)) * 10) / 10;
 
     // Detect pages accurately using existing utility
-    const fileInfo = await detectFileInfo(filepath);
+    const fileInfo = await detectFileInfo(filepath, req.file.mimetype);
 
     const plan = selectPlan(fileInfo.pages);
 
