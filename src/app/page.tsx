@@ -118,6 +118,7 @@ function IconX({ className = "w-4 h-4" }: { className?: string }) {
 /* ─── Component ─── */
 export default function HomePage() {
   const [file, setFile] = useState<File | null>(null);
+  const [uploadedFileId, setUploadedFileId] = useState<string | null>(null);
   const [pageCount, setPageCount] = useState<number>(0);
   const [selectedPlan, setSelectedPlan] = useState<PricePlan | null>(null);
   const [selectedPayment, setSelectedPayment] = useState<PaymentMethod>(null);
@@ -129,9 +130,9 @@ export default function HomePage() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const canPay = file && selectedPlan && selectedPayment && !isDetecting && !isPaying;
+  const canPay = file && selectedPlan && selectedPayment && !isDetecting && !isPaying && uploadedFileId;
 
-  const handleFile = useCallback((selectedFile: File) => {
+  const handleFile = useCallback(async (selectedFile: File) => {
     setFileError(null);
     setShowResults(false);
     setSelectedPayment(null);
@@ -139,14 +140,30 @@ export default function HomePage() {
     if (!validation.valid) { setFileError(validation.error!); return; }
     setFile(selectedFile);
     setIsDetecting(true);
-    const delay = 1200 + Math.random() * 800;
-    setTimeout(() => {
-      const pages = detectPages(selectedFile);
-      setPageCount(pages);
-      setSelectedPlan(selectPlan(pages));
+
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || `http://${window.location.hostname}:5000`;
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+      const uploadRes = await fetch(`${apiUrl}/api/upload`, { method: "POST", body: formData });
+      const uploadData = await uploadRes.json();
+      
+      if (!uploadData.success) {
+        setFileError(uploadData.error || "Gagal mengupload file.");
+        setIsDetecting(false);
+        return;
+      }
+
+      setPageCount(uploadData.pageCount);
+      setSelectedPlan(selectPlan(uploadData.pageCount));
+      setUploadedFileId(uploadData.fileId);
+      
       setIsDetecting(false);
       setShowResults(true);
-    }, delay);
+    } catch (err: any) {
+      setFileError("Gagal terhubung ke server: " + err.message);
+      setIsDetecting(false);
+    }
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -164,7 +181,7 @@ export default function HomePage() {
   }, [handleFile]);
 
   const handleReset = useCallback(() => {
-    setFile(null); setPageCount(0); setSelectedPlan(null); setSelectedPayment(null);
+    setFile(null); setUploadedFileId(null); setPageCount(0); setSelectedPlan(null); setSelectedPayment(null);
     setIsDetecting(false); setFileError(null); setShowResults(false); setIsPaying(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, []);
@@ -174,19 +191,13 @@ export default function HomePage() {
   }, []);
 
   const handlePay = useCallback(async () => {
-    if (!canPay) return;
+    if (!canPay || !uploadedFileId) return;
     setIsPaying(true);
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || `http://${window.location.hostname}:5000`;
-      const formData = new FormData();
-      formData.append("file", file!);
-      const uploadRes = await fetch(`${apiUrl}/api/upload`, { method: "POST", body: formData });
-      const uploadData = await uploadRes.json();
-      if (!uploadData.success) { alert("Gagal upload file: " + uploadData.error); setIsPaying(false); return; }
-
       const orderRes = await fetch(`${apiUrl}/api/create-order`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amount: selectedPlan!.price, paymentMethod: selectedPayment, fileId: uploadData.fileId, pageCount: uploadData.pageCount, fileName: uploadData.fileName }),
+        body: JSON.stringify({ amount: selectedPlan!.price, paymentMethod: selectedPayment, fileId: uploadedFileId, pageCount: pageCount, fileName: file?.name }),
       });
       const orderData = await orderRes.json();
       if (!orderData.success) { alert("Gagal membuat transaksi: " + orderData.error); setIsPaying(false); return; }
@@ -195,7 +206,7 @@ export default function HomePage() {
       alert("Terjadi kesalahan: " + e.message);
       setIsPaying(false);
     }
-  }, [canPay, file, pageCount, selectedPlan, selectedPayment]);
+  }, [canPay, file, uploadedFileId, pageCount, selectedPlan, selectedPayment]);
 
   return (
     <div className="dashboard">
